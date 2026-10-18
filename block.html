@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Neon Koşucu</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #000;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      user-select: none;
+    }
+    #ui {
+      position: absolute;
+      top: 20px;
+      left: 20px;
+      color: #fff;
+      font-size: 24px;
+      font-weight: bold;
+      text-shadow: 0 0 10px rgba(0,255,200,0.8);
+      z-index: 10;
+    }
+    #instructions {
+      position: absolute;
+      bottom: 20px;
+      width: 100%;
+      text-align: center;
+      color: #888;
+      font-size: 15px;
+      z-index: 10;
+    }
+    #gameOverScreen {
+      display: none;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(15, 15, 25, 0.95);
+      border: 2px solid #ff0055;
+      padding: 30px 50px;
+      text-align: center;
+      border-radius: 12px;
+      box-shadow: 0 0 30px rgba(255, 0, 85, 0.5);
+      color: white;
+      z-index: 20;
+    }
+    #gameOverScreen h1 {
+      margin: 0 0 10px 0;
+      color: #ff0055;
+    }
+    #gameOverScreen button {
+      margin-top: 15px;
+      padding: 10px 25px;
+      background: #ff0055;
+      border: none;
+      color: white;
+      font-size: 16px;
+      font-weight: bold;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    #gameOverScreen button:hover {
+      background: #ff3377;
+    }
+  </style>
+  <!-- İnternet üzerinden 3D motorunu (Three.js) yüklüyoruz -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+
+  <div id="ui">Skor: <span id="scoreText">0</span> m</div>
+
+  <div id="instructions">
+    [A] / [←] : Sola Kay | [D] / [→] : Sağa Kay | [BOŞLUK / Space] : Zıpla
+  </div>
+
+  <div id="gameOverScreen">
+    <h1>OYUN BİTTİ!</h1>
+    <p>Ulaştığın Mesafe: <span id="finalScore">0</span> metre</p>
+    <button onclick="restartGame()">Tekrar Oyna</button>
+  </div>
+
+  <script>
+    // --- 3D SAHNE KURULUMU ---
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x0a0a14, 0.015); // Derinlik sisi
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // Işıklar
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambientLight);
+
+    const dirLight = new THREE.DirectionalLight(0x00ffff, 0.8);
+    dirLight.position.set(0, 20, 10);
+    scene.add(dirLight);
+
+    // 3D Pist (Yol)
+    const roadGeometry = new THREE.PlaneGeometry(16, 600);
+    const roadMaterial = new THREE.MeshPhongMaterial({ color: 0x11131f });
+    const road = new THREE.Mesh(roadGeometry, roadMaterial);
+    road.rotation.x = -Math.PI / 2;
+    road.position.z = -250;
+    scene.add(road);
+
+    // Pist Şerit Çizgileri
+    const gridHelper = new THREE.GridHelper(600, 60, 0x00ffcc, 0x222538);
+    gridHelper.position.set(0, 0.05, -250);
+    gridHelper.rotation.y = Math.PI / 2;
+    scene.add(gridHelper);
+
+    // --- OYUNCU (3D KÜP) ---
+    const playerGeo = new THREE.BoxGeometry(1.4, 1.4, 1.4);
+    const playerMat = new THREE.MeshPhongMaterial({ 
+      color: 0x00ffcc, 
+      emissive: 0x004433,
+      shininess: 100 
+    });
+    const player = new THREE.Mesh(playerGeo, playerMat);
+    player.position.set(0, 0.7, 0);
+    scene.add(player);
+
+    // Kamera açısı (Karakterin arkasından takip eder)
+    camera.position.set(0, 4, 7);
+    camera.rotation.x = -0.35;
+
+    // --- OYUN DEĞİŞKENLERİ ---
+    let playerTargetX = 0;
+    let playerYVelocity = 0;
+    let isJumping = false;
+    let gravity = -0.018;
+
+    let gameSpeed = 1.2;
+    let score = 0;
+    let isGameOver = false;
+
+    const obstacles = [];
+    const lanes = [-4.5, 0, 4.5]; // 3 Şeritli yol
+
+    // Klavye Kontrolleri
+    window.addEventListener("keydown", (e) => {
+      if (isGameOver) {
+        if (e.code === "Space") restartGame();
+        return;
+      }
+
+      const key = e.key.toLowerCase();
+      // Sol şeride geç
+      if ((key === "a" || key === "arrowleft") && playerTargetX > -4) {
+        playerTargetX -= 4.5;
+      }
+      // Sağ şeride geç
+      if ((key === "d" || key === "arrowright") && playerTargetX < 4) {
+        playerTargetX += 4.5;
+      }
+      // Zıpla
+      if ((e.code === "Space" || key === "arrowup" || key === "w") && !isJumping) {
+        playerYVelocity = 0.42;
+        isJumping = true;
+      }
+    });
+
+    // Engel Oluşturma Fonksiyonu
+    function spawnObstacle() {
+      const lane = lanes[Math.floor(Math.random() * lanes.length)];
+      const isTall = Math.random() < 0.35; // Bazen zıplayarak geçilemeyecek yüksek engel
+
+      const height = isTall ? 3.5 : 1.2;
+      const obsGeo = new THREE.BoxGeometry(2.5, height, 1.5);
+      const obsMat = new THREE.MeshPhongMaterial({ 
+        color: isTall ? 0xffaa00 : 0xff0055,
+        emissive: isTall ? 0x442200 : 0x550011 
+      });
+
+      const obstacle = new THREE.Mesh(obsGeo, obsMat);
+      obstacle.position.set(lane, height / 2, -180);
+      obstacle.userData = { height: height, isTall: isTall };
+
+      scene.add(obstacle);
+      obstacles.push(obstacle);
+    }
+
+    let spawnTimer = 0;
+
+    // --- ANA OYUN DÖNGÜSÜ ---
+    function animate() {
+      requestAnimationFrame(animate);
+
+      if (isGameOver) return;
+
+      // Skor ve Hız Artışı
+      score += Math.floor(gameSpeed * 0.5);
+      gameSpeed += 0.0002; // Zamanla oyun hızlanır
+      document.getElementById("scoreText").innerText = score;
+
+      // Karakter Yatay Yumuşak Hareket
+      player.position.x += (playerTargetX - player.position.x) * 0.2;
+
+      // Karakter Zıplama & Yerçekimi
+      if (isJumping) {
+        player.position.y += playerYVelocity;
+        playerYVelocity += gravity;
+
+        if (player.position.y <= 0.7) {
+          player.position.y = 0.7;
+          isJumping = false;
+        }
+      }
+
+      // Hafif küp yuvarlanma animasyonu
+      player.rotation.x -= 0.05;
+
+      // Yol zeminini geriye kaydır (Hareket hissi için)
+      gridHelper.position.z += gameSpeed;
+      if (gridHelper.position.z > 0) gridHelper.position.z = -10;
+
+      // Engelleri oluştur
+      spawnTimer++;
+      if (spawnTimer > Math.max(30, 75 - Math.floor(gameSpeed * 10))) {
+        spawnObstacle();
+        spawnTimer = 0;
+      }
+
+      // Engelleri hareket ettir ve Çarpışma Kontrolü Yap
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const obs = obstacles[i];
+        obs.position.z += gameSpeed;
+
+        // Çarpışma Testi (AABB Basit Çarpışma)
+        const xDist = Math.abs(player.position.x - obs.position.x);
+        const zDist = Math.abs(player.position.z - obs.position.z);
+        const playerBottom = player.position.y - 0.7;
+
+        if (xDist < 1.8 && zDist < 1.2) {
+          // Eğer engelin üzerinden atlamadıysa çarpar
+          if (playerBottom < obs.userData.height - 0.2) {
+            gameOver();
+            return;
+          }
+        }
+
+        // Ekrandan çıkan engelleri sil
+        if (obs.position.z > 15) {
+          scene.remove(obs);
+          obstacles.splice(i, 1);
+        }
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    function gameOver() {
+      isGameOver = true;
+      document.getElementById("finalScore").innerText = score;
+      document.getElementById("gameOverScreen").style.display = "block";
+    }
+
+    function restartGame() {
+      // Sahnedeki tüm engelleri temizle
+      for (let obs of obstacles) {
+        scene.remove(obs);
+      }
+      obstacles.length = 0;
+
+      // Değişkenleri sıfırla
+      score = 0;
+      gameSpeed = 1.2;
+      playerTargetX = 0;
+      player.position.set(0, 0.7, 0);
+      isJumping = false;
+      isGameOver = false;
+
+      document.getElementById("gameOverScreen").style.display = "none";
+    }
+
+    // Pencere boyutu değişirse kamerayı uyarla
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+  </script>
+</body>
+</html>
